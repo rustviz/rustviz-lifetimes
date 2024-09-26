@@ -1,8 +1,10 @@
 use std::collections::{HashSet, BTreeMap};
+use std::process::exit;
 use std::vec::Vec;
 use std::fmt::{Formatter, Result, Display};
 use crate::data::Event::*;
 use crate::hover_messages;
+pub(crate) use crate::svg_frontend::lifetime_vis::LifetimeVisualization;
 /*
  * Basic Data Structure Needed by Lifetime Visualization
  */
@@ -28,6 +30,8 @@ pub trait Visualizable {
     
     // preprocess externa event information for arrow overlapping issue
     fn append_external_event(&mut self, event: ExternalEvent, line_number: &usize);
+    // adds lifetimes to visualization data
+    fn append_lifetimes(&mut self, spool: LifetimeVisualization);
     // if resource_access_point with hash is mutable
     fn is_mut(&self, hash: &u64 ) -> bool;
     // if resource_access_point with hash is a function
@@ -48,6 +52,23 @@ pub enum ResourceAccessPoint {
     StaticRef(StaticRef),
     Function(Function),
     Struct(Struct),
+    LifetimeVars(LifetimeVars),
+    LifetimeBind(LifetimeBind),
+}
+
+/**
+ * LifetimeBind type can be used when a container possesses several instances with lifetime annotation.
+ * For example, dq: VecDeque<&'i MyStruct>. Things inside dq can be bound to dq.
+ */
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+pub struct LifetimeBind{
+    pub name: String,
+    pub bind_to_name: String,
+    pub relationship: String,
+}
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+pub struct LifetimeVars{
+    pub name: String,
 }
 
 // when something is not a reference
@@ -64,7 +85,7 @@ pub struct Struct {
     pub name: String,
     pub hash: u64,
     pub owner: u64,
-    pub is_mut: bool,                     
+    pub is_mut: bool,
     pub is_member: bool
 }
 
@@ -100,6 +121,7 @@ impl ResourceAccessPoint {
             ResourceAccessPoint::MutRef(MutRef{hash, ..}) => hash,
             ResourceAccessPoint::StaticRef(StaticRef{hash, ..}) => hash,
             ResourceAccessPoint::Function(Function{hash, ..}) => hash,
+            _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
         }
     }
 
@@ -111,6 +133,7 @@ impl ResourceAccessPoint {
             ResourceAccessPoint::MutRef(MutRef{name, ..}) => name,
             ResourceAccessPoint::StaticRef(StaticRef{name, ..}) => name,
             ResourceAccessPoint::Function(Function{name, ..}) => name,
+            _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
         }
     }
 
@@ -122,6 +145,7 @@ impl ResourceAccessPoint {
             ResourceAccessPoint::MutRef(MutRef{is_mut, ..}) => is_mut.to_owned(),
             ResourceAccessPoint::StaticRef(StaticRef{is_mut, ..}) => is_mut.to_owned(),
             ResourceAccessPoint::Function(_) => false,
+            _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
         }
     }
 
@@ -132,6 +156,7 @@ impl ResourceAccessPoint {
             ResourceAccessPoint::MutRef(_) => true,
             ResourceAccessPoint::StaticRef(_) => true,
             ResourceAccessPoint::Function(_) => false,
+            _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
         }
     }
 
@@ -149,6 +174,7 @@ impl ResourceAccessPoint {
             ResourceAccessPoint::MutRef(_) => false,
             ResourceAccessPoint::StaticRef(_) => false,
             ResourceAccessPoint::Function(_) => false,
+            _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
         }
     }
 
@@ -159,6 +185,7 @@ impl ResourceAccessPoint {
             ResourceAccessPoint::MutRef(_) => false,
             ResourceAccessPoint::StaticRef(_) => false,
             ResourceAccessPoint::Function(_) => false,
+            _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
         }
     }
 
@@ -169,6 +196,7 @@ impl ResourceAccessPoint {
             ResourceAccessPoint::MutRef(_) => false,
             ResourceAccessPoint::StaticRef(_) => false,
             ResourceAccessPoint::Function(_) => false,
+            _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
         }
     }
 
@@ -179,6 +207,7 @@ impl ResourceAccessPoint {
             ResourceAccessPoint::MutRef(MutRef{hash, ..}) => hash.to_owned(),
             ResourceAccessPoint::StaticRef(StaticRef{hash, ..}) => hash.to_owned(),
             ResourceAccessPoint::Function(Function{hash, ..}) => hash.to_owned(),
+            _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
         }
     }
 }
@@ -542,7 +571,10 @@ pub struct VisualizationData {
     pub preprocess_external_events: Vec<(usize, ExternalEvent)>,
     //line_info
     pub event_line_map: BTreeMap<usize, Vec<ExternalEvent>>,
+
+    pub lifetimes: Option<Vec<LifetimeVisualization>>,
 }
+
 
 #[allow(non_snake_case)]
 pub fn ResourceAccessPoint_extract (external_event : &ExternalEvent) -> (&Option<ResourceAccessPoint>, &Option<ResourceAccessPoint>){
@@ -632,6 +664,7 @@ impl Visualizable for VisualizationData {
                             borrow_to: [ro.to_owned()].iter().cloned().collect()
                         }
                     }
+                    _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0)},
                 }
             },
 
@@ -799,6 +832,17 @@ impl Visualizable for VisualizationData {
         }
     }
 
+
+    fn append_lifetimes(&mut self, spool: LifetimeVisualization) {
+        if let Some(ref mut life) = self.lifetimes {
+            life.push(spool);
+        }
+        else {
+            self.lifetimes = Some(vec![spool]);
+        }
+    }
+
+
     // WARNING do not call this when making visualization!! 
     // use append_external_event instead
     fn _append_event(&mut self, resource_access_point: &ResourceAccessPoint, event: Event, line_number: &usize) {
@@ -925,6 +969,7 @@ impl Visualizable for VisualizationData {
                         );
                         std::process::exit(1);
                     }
+                    _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0);},
                 }
             },
         }

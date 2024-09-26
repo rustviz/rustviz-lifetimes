@@ -1,13 +1,14 @@
 // rust lib
 use std::process::exit;
+use regex::Regex;
 use std::collections::HashMap;
 type Lines = std::io::Lines<std::io::BufReader<std::fs::File>>;
 // svg_generator
 use rustviz_lib::data::{
     ExternalEvent, Function, MutRef, Owner, Struct,
-    ResourceAccessPoint, StaticRef, VisualizationData, Visualizable
+    ResourceAccessPoint, StaticRef, VisualizationData, Visualizable, LifetimeVars, LifetimeBind
 };
-
+use rustviz_lib::svg_frontend::lifetime_vis::*;
 // Requires: Valid file path
 //           Variables specified within BEGIN and END statements
 // Modifies: Nothing, unchanged
@@ -52,6 +53,7 @@ pub fn parse_vars_to_map<P>(fpath: P) -> (
         .collect();
 
     // return Lines iterator
+    // println!("vars_string: {:?}", vars_string);
     (fin_lines, num_lines, vec_to_map(vars))
 }
 
@@ -83,6 +85,59 @@ fn vec_to_map(vars_str: Vec<String>) -> HashMap<String, ResourceAccessPoint> {
         let name = (if fields.len() > 2 { fields[2] } else { fields[1] }).to_string();
         // match type with possible ResourceAccessPoints
         match (fields[0], fields.len()) {
+            ("LifetimeVars", _) => {
+                let mut l_name = name;
+                if fields.len() > 2 {
+                    l_name = fields[1..].join(" ");
+                }
+                vars_map.insert(
+                    l_name.clone(),
+                    ResourceAccessPoint::LifetimeVars(LifetimeVars{
+                        name : l_name
+                    })
+                );
+            },
+            ("LifetimeBind", _) => {
+                // syntax (every white space is required to ensure correctness):
+                // LifetimeBind name_separated_by_spaces -> bind_to_name_separated_by_spaces [Relationship]
+                // for example:
+                // LifetimeBind &mut read_request -> &mut request_queue [Containing]
+                // -> symbol is required
+                if let Some(binds_to_idx) = fields.iter().position(|e| e == &"->"){
+                    let l_name = fields[1..binds_to_idx].join(" ");
+                    if binds_to_idx == fields.len() - 1{
+                        eprintln!("Must have bind-to LifetimeVar name!");
+                        exit(0);
+                    }
+                    let bind_to_name = fields[binds_to_idx+1..fields.len()-1].join(" ");
+                    let re = Regex::new(r"\[([^\]]+)\]").unwrap();
+                    let mut relationship = String::new();
+                    for captures in re.captures_iter(&fields[fields.len()-1]){
+                        if let Some(captured_content) = captures.get(1){
+                            relationship = captured_content.as_str().to_string();
+                        }
+                        else{
+                            eprintln!("Must have bind-to relationship enclosed by square brackets!");
+                            exit(0);
+                        }
+                    }
+                    if relationship.len() == 0{
+                        eprintln!("Must have non-trivial bind-to relationship enclosed by square brackets!");
+                        exit(0);
+                    }
+                    vars_map.insert(l_name.clone(),
+                        ResourceAccessPoint::LifetimeBind(LifetimeBind{
+                        name : l_name,
+                        bind_to_name: bind_to_name,
+                        relationship: relationship,
+                        })
+                    );
+                }
+                else{
+                    eprintln!("Must have bind-to LifetimeVar name! Did you forget adding \"->\" to indicate that?");
+                    exit(0);
+                }
+            }
             ("Owner", 2) | ("Owner", 3) => {
                 vars_map.insert(
                     name,
@@ -222,7 +277,6 @@ pub fn add_events(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-
         let mut field = Vec::new();
         if split.len() == 1 { // no "->"
             let idx = split[0].find("(").expect(&event_usage_err());
@@ -236,11 +290,11 @@ pub fn add_events(
             field.push(&split[0][idx+1..]); // from
             field.push(&split[1][..split[1].len()-1]); // to
         }
+        
         else { // uh oh, wrong
             eprintln!("{}", event_usage_err());
             exit(1);
         }
-
         // check for any empty fields
         for f in &field {
             if f.is_empty() {
@@ -248,7 +302,6 @@ pub fn add_events(
                 exit(1);
             }
         };
-
         match field[0] {
             "Bind" => vd.append_external_event(
                 ExternalEvent::Bind{
@@ -332,15 +385,119 @@ pub fn add_events(
                 },
                 &(event.0 as usize)
             ),
+            "Lifetime" => {
+                // no return variable
+                if field.len() == 2{
+                    vd.append_lifetimes(create_lifetime_vis(&field[1], "", &vars))
+                }
+                else if field.len() > 2 {
+                    vd.append_lifetimes(create_lifetime_vis(&field[1], &field[2], &vars));
+                }
+                else{
+                    eprintln!("Something wrong with lifetime annotation syntax!");
+                    exit(1);
+                }
+            },
             _ => {
                 eprintln!("{} is not a valid event.", field[0]);
-                println!("{}", event_usage_err());
+                eprintln!("{}", event_usage_err());
                 exit(1);
             }
         }
     }
 }
 
+//fn add_annotation_type()
+fn create_lifetime_vis(half_one: &str, half_two: &str, vars: &HashMap<String, ResourceAccessPoint>) -> LifetimeVisualization {
+    let mut livis = LifetimeVisualization{
+        input_lives: Vec::new(),
+        return_lives: Vec::new(),
+        annotation_type: LifetimeType::None,
+    };
+    let half_one_string = half_one.to_string();
+    let half_two_string = half_two.to_string();
+    // find first matching '>'
+    let mut anno_content = String::new();
+    let mut input_var_annotation_content = String::new();
+    if let Some(fmidx) = half_one_string.find('>'){
+        anno_content = half_one_string.get(half_one_string.find('<').unwrap()+1..fmidx).unwrap().to_string();
+        input_var_annotation_content = half_one_string.get(fmidx+1..).unwrap().to_string();
+    }
+    else{
+        eprintln!("Wrong lifetime annotation syntax!")
+    }
+    let anno_data: Vec<&str> = anno_content
+        .splitn(2, ':')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    match anno_data[0] {
+       "FUNC" => livis.annotation_type = LifetimeType::Func(anno_data[1].to_string()),
+        "STRUCT" => livis.annotation_type = LifetimeType::Struct(anno_data[1].to_string()),
+        "VAR" => livis.annotation_type = LifetimeType::Var(anno_data[1].to_string()),
+        _ => eprintln!("Incorrect lifetime type!"),
+    };
+    // println!("annotaion: {:?}", livis.annotation_type);
+    // println!("input_Var: {}", input_var_annotation_content);
+    // exit(0);
+    livis.input_lives = parse_lifetime(&input_var_annotation_content, &vars);
+    if half_two_string.len() == 0{
+        livis.return_lives = Vec::new();
+    }
+    else{
+        livis.return_lives = parse_lifetime(&half_two_string, &vars);
+    }
+    livis
+
+
+}
+fn parse_lifetime(field: &str, vars: &HashMap<String, ResourceAccessPoint>) -> Vec<Lifetime> {
+    let field_string = field.to_string();
+    let elements: Vec<&str> = field_string
+        .split(|c| c == '[' || c == ']')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut input_lives: Vec<Lifetime> = Vec::new();
+    // println!("input_lives: {:?}", elements);
+    // exit(0);
+    for element in elements {
+        input_lives.push(create_lifetime(element, &vars));
+}
+    input_lives
+}
+
+fn create_lifetime(input: &str, vars: &HashMap<String, ResourceAccessPoint>) -> Lifetime {
+
+    let lifetime_data: Vec<&str> = input
+        .split(|c| c == '{' || c == '}' || c == ':' || c == '*')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    // Structure should be: [RAP, start_line, end_line, optional_comment]
+    let mut lifetime = Lifetime {
+        rap: get_resource(&vars, lifetime_data[0]).expect("Not a valid ResourceAccessPoint!"),
+        start_line: lifetime_data[1].parse::<u64>().expect("Not a valid line number!"),
+        end_line: lifetime_data[2].parse::<u64>().expect("Not a valid line number!"),
+        explanation: None,
+    };
+    /* changed lifetime annotation syntax to allow multiple ExtraExplanation for one variable */
+    if lifetime_data.len() > 3 {
+        let mut tmp_vec : Vec<ExtraExplanation> = Vec::new();
+        for (itr, expl) in lifetime_data[3..].iter().enumerate().step_by(2) {
+        match *expl {
+                "NAME" => tmp_vec.push(ExtraExplanation::NAME(lifetime_data[itr + 4].to_string())),
+                "CRPT" => tmp_vec.push(ExtraExplanation::CRPT(lifetime_data[itr + 4].to_string())),
+                "DRPT" => tmp_vec.push(ExtraExplanation::DRPT(lifetime_data[itr + 4].to_string())),
+                "BODY" => tmp_vec.push(ExtraExplanation::BODY(lifetime_data[itr + 4].to_string())),
+                _ => eprintln!("Invalid Explanation type!"),
+        }
+        }
+        lifetime.explanation = Some(tmp_vec);
+    };
+    lifetime
+}
 // Requires: Valid, existant ResourceAccessPoint name
 // Modifies: Nothing, unchanged
 // Effects: Returns clone of ResourceAccessPoint

@@ -4,6 +4,7 @@ use crate::data::{StructsInfo, VisualizationData, Visualizable, ExternalEvent, S
 use crate::svg_frontend::line_styles::{RefDataLine, RefValueLine, OwnerLine};
 use handlebars::Handlebars;
 use std::collections::BTreeMap;
+use std::process::exit;
 use serde::Serialize;
 use std::cmp;
 
@@ -129,11 +130,11 @@ pub fn render_timeline_panel(visualization_data : &VisualizationData) -> (String
     let (resource_owners_layout, width) = compute_column_layout(visualization_data, &mut structs_info);
 
     let mut output : BTreeMap<i64, (TimelinePanelData, TimelinePanelData)> = BTreeMap::new();
-    output.insert(-1, (TimelinePanelData{ labels: String::new(), dots: String::new(), timelines: String::new(), 
-        ref_line: String::new(), arrows: String::new() }, TimelinePanelData{ labels: String::new(), dots: String::new(), 
-            timelines: String::new(), ref_line: String::new(), arrows: String::new() })); 
+    output.insert(-1, (TimelinePanelData{ labels: String::new(), dots: String::new(), timelines: String::new(),
+        ref_line: String::new(), arrows: String::new() }, TimelinePanelData{ labels: String::new(), dots: String::new(),
+            timelines: String::new(), ref_line: String::new(), arrows: String::new() }));
     // Note: key {-1} = non-struct timelines
-    
+
     // render resource owner labels
     render_timelines(&mut output, visualization_data, &resource_owners_layout, &registry);
     render_labels_string(&mut output, &resource_owners_layout, &registry);
@@ -205,6 +206,8 @@ fn prepare_registry(registry: &mut Handlebars) {
     let box_template =
         "        <rect id=\"{{name}}\" x=\"{{x}}\" y=\"{{y}}\" rx=\"20\" ry=\"20\" width=\"{{w}}\" height=\"{{h}}\" style=\"fill:white;stroke:black;stroke-width:3;opacity:0.1\" pointer-events=\"none\" />\n";
 
+
+
     assert!(
         registry.register_template_string("struct_template", struct_template).is_ok()
     );
@@ -241,6 +244,7 @@ fn prepare_registry(registry: &mut Handlebars) {
     assert!(
         registry.register_template_string("box_template", box_template).is_ok()
     );
+
 }
 
 // Returns: a binary tree map from the hash of the ResourceOwner to its Column information
@@ -248,7 +252,7 @@ fn compute_column_layout<'a>(
     visualization_data: &'a VisualizationData,
     structs_info: &'a mut StructsInfo,
 ) -> (BTreeMap<&'a u64, TimelineColumnData>, i32) {
-    let mut resource_owners_layout = BTreeMap::new();
+    let mut resource_owners_layout: BTreeMap<&u64, TimelineColumnData> = BTreeMap::new();
     let mut x = 0; // Right-most Column x-offset.
     let mut owner = -1;
     let mut owner_x = 0;
@@ -306,7 +310,8 @@ fn compute_column_layout<'a>(
                         is_member: timeline.resource_access_point.is_member(),
                         owner: timeline.resource_access_point.get_owner(),
                     });
-            }
+            },
+            _ => ()
         }
     }
     (resource_owners_layout, (x as i32)+100)
@@ -413,6 +418,7 @@ fn render_dots_string(
                     }
                 }
             },
+            _ => (),
         }
     }
 }
@@ -473,6 +479,7 @@ fn render_arrows_string_external_events_version(
                 ResourceAccessPoint::MutRef(mutref) => mutref.name.to_owned(),
                 ResourceAccessPoint::StaticRef(statref) => statref.name.to_owned(),
                 ResourceAccessPoint::Function(func) => func.name.to_owned(),
+                _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0);},
             };
             let styled_from_string = SPAN_BEGIN.to_string() + &from_string + SPAN_END;
             title = format!("{} from {}", title, styled_from_string);
@@ -484,6 +491,7 @@ fn render_arrows_string_external_events_version(
                 ResourceAccessPoint::MutRef(mutref) => mutref.name.to_owned(),
                 ResourceAccessPoint::StaticRef(statref) => statref.name.to_owned(),
                 ResourceAccessPoint::Function(func) => func.name.to_owned(),
+                _ => {eprintln!("LifetimeVars annotation shouldn't appear here! Try looking at your annotations!"); exit(0);},
             };
             let styled_to_string = SPAN_BEGIN.to_string() + &to_string + SPAN_END;
             title = format!("{} to {}", title, styled_to_string);
@@ -888,6 +896,7 @@ fn render_timelines(
                 ResourceAccessPoint::StaticRef(_) | ResourceAccessPoint::MutRef(_) => {
                     output.get_mut(&-1).unwrap().0.timelines.push_str(&create_reference_line_string(rap, state, &mut data.unwrap(), registry));
                 },
+                _ => (),
             }
         }
     }
@@ -981,7 +990,8 @@ fn render_ref_line(
                         _ => (),
                     }
                 }
-            },  
+            },
+            _ => (),
         }
     }
 }
